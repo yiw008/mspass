@@ -8,7 +8,10 @@ from mspasspy.ccore.seismic import (
     SeismogramEnsemble,
 )
 from mspasspy.algorithms.basic import ExtractComponent
-from mspasspy.algorithms.window import scale as alg_scale
+
+# set as this alias to avoid collision with internal scale
+# not sure that is necessary but this makes context clearer
+from mspasspy.algorithms.window import scale as mspass_scale_function
 
 
 def wtva_raw(section, t0, dt, ranges=None, scale=1.0, color="k", normalize=False):
@@ -541,7 +544,106 @@ class SectionPlotter:
             )
 
 
-class SeismicPlotter:
+class BasicSeismicPlotter(ABC):
+    """
+    Base class for MsPASS graphics objects used to visualize seismic
+    data with the geometry of time as the x axis.  That produces
+    graphics with seismograms horizontal as opposed to record sections
+    where the time axis is y.
+
+    This base class should never be instantiated by itself.   It contains
+    methods that can be reused by different implementations in a class
+    hierarchy.
+    """
+
+    def __init__(self, scale=1.0, normalize=False, title=None):
+        self.scale = scale
+        self.title = title
+        self.normalize = normalize
+
+    # These two method should perhaps be implemented as decorators
+
+    def topdown(self):
+        """
+        Switch to mode of plotting ensembles from the top downward
+        from default of bottum upward.
+        """
+        self._plot_topdown = True
+
+    def bottomup(self):
+        """
+        Restore (or force) default ensemble plot order of bottup upward.
+        """
+        self._plot_topdown = False
+
+    def _deepcopy(self, d):
+        """
+        Private helper method for immediately above.   Necessary because
+        copy.deepcopy doesn't work with our pybind11 wrappers. There may be a
+        fix, but for now we have to use copy constructors specific to each
+        object type.
+        """
+        if isinstance(d, TimeSeries):
+            return TimeSeries(d)
+        elif isinstance(d, Seismogram):
+            return Seismogram(d)
+        elif isinstance(d, TimeSeriesEnsemble):
+            return TimeSeriesEnsemble(d)
+        elif isinstance(d, SeismogramEnsemble):
+            return SeismogramEnsemble(d)
+        else:
+            message = "BasicSeismicPlotter._deepcopy:  "
+            message += "received unsupported data type={}".format(str(type(d)))
+            raise MsPASSError(message, ErrorSeverity.Invalid)
+
+    def set_topdown(self):
+        """
+        Call this method to have datat plotted from top down.  Default plots
+        ensemble member 0 at the bottom of the plot with successive members
+        plotted in units of 1.0 above the last.  When this is called the
+        order is reversed.
+        """
+        self._plot_topdown = True
+
+    # These are private methods used internally
+
+    def _normalize(self, d):
+        """
+        Normalizes data (d) using scale function.  for ensembles that
+        is peak normalization to level self.scale by section. For
+        Seismograms each component will be normalized independently.
+        For TimeSeries the peak is adjusted to self.scale.
+
+        :param d:  input data to be scanned (must be one of mspass supported
+        data objects or will throw an exception)
+        :param perf:  clip level as used in seismic unix displays.
+        """
+        # These are place holders for now.  Requires some new code in ccore
+        # to sort absolute values and return perf level - should use faster
+        # max value when perf is 100%
+        if isinstance(d, SeismogramEnsemble):
+            mspass_scale_function(d, scale_by_section=True, level=self.scale)
+        elif isinstance(d, TimeSeriesEnsemble):
+            mspass_scale_function(d, scale_by_section=True, level=self.scale)
+        elif isinstance(d, TimeSeries):
+            mspass_scale_function(d, level=self.scale)
+        elif isinstance(d, Seismogram):
+            mspass_scale_function(d, level=self.scale)
+        else:
+            message = "BasicSeismicPlotter._deepcopy:  "
+            message += "received unsupported data type={}".format(str(type(d)))
+            raise MsPASSError(message, ErrorSeverity.Invalid)
+
+    @abstractmethod
+    def plot():
+        """
+        Alll concrete implementations must implement this method to do
+        some plotting.
+        """
+        pass
+
+
+class SeismicPlotter(BasicSeismicPlotter):
     """
     SeismicPlotter is used to plot mspass data objects in the
     seismology convention with time as the x axis.  Use SectionPlotter
@@ -565,15 +667,11 @@ class SeismicPlotter:
     to the change_style method, should be done before calling plot.
     """
 
-    def __init__(self, scale=1.0, normalize=False, title=None):
+    def __init__(self, scale=1.0, normalize=False, title=None, style="wtvaimg"):
         """
         Constructor for this object.   It mostly sets defaults but
         has a few common optional parameters to set at construction
-        time.  Note style is intentionally not a constructor
-        parameter because of parameter interdependence.  The default
-        plot style is "wtva".  Use change_style to use change plot
-        style.
-
+        time.
         :param scale:  optional scale factor to apply to data before plotting
           (default assumes data have been scaled to amplitude of order 1)
         :param  normalize:  Default assumes the data have been scaled with
@@ -581,20 +679,21 @@ class SeismicPlotter:
         (or the scale parameter).  Set True if the data are to be
         normalized internally by the plotter.
         :param title:   optional title to put on graphics.  Note for
-        SeismogramEnsembles each of the three windows will be tagged
-        with a variant of this title string adding ":n" where n is
-        the component number (0,1,2).
+          SeismogramEnsembles each of the three windows will be tagged
+          with a variant of this title string adding ":n" where n is
+          the component number (0,1,2).
+        :type title: string (default None makes no plot title)
+        :param style:  plot style to one of the accepted style names.
+          That is one of: ["wt","wtva","img","wtvaimg"]
+        :type style:  string (one of list above or a TypeError exceptin
+          is thrown)
         """
-        # these are public because they can set independently
-        self.scale = scale
-        self.title = title
-        self.normalize = normalize
-        # these have some interdependencies and are best altered only
-        # through the change_style method.  This may be unnecessary
-        # as it may duplicate the call to change_style at the end, BUT
-        # if the default changes these initial values do not need to be
-        # changed
-        self._style = "wtva"
+        super().__init__(
+            scale=scale,
+            title=title,
+            normalize=normalize,
+        )
+
         self._fill_color = "k"  # black in matplotlib
         self._color_map = "seismic"
         # these are options to raw codes adapted from  fatiando a terra
@@ -610,8 +709,39 @@ class SeismicPlotter:
         # Should be smaller than 1/screem horizontal pixel maximum size
         self._RANGE_RATIO_TEST = 0.0001
         self._default_single_ts_aspect = 0.25
-        # use change_style to simply default style
-        self.change_style("wtvaimg")
+        if style in ["wt", "wtva", "img", "wtvaimg"]:
+            # use change_style to simply default style as this does more than
+            # just set a string name
+            self.change_style(style)
+        else:
+            message = "SeismicPlotter constuctor:  "
+            message += "Illegal valeu for style={}\n".format(style)
+            message + +"Must string froom this list of keywords:"
+            message += "wt, wtva, img, wtvaimg"
+            raise TypeError(message)
+        # These are set whenever a plot is made.
+        # None signals they aren't yet defined and need to be
+        # initialized.
+        self.figure = None
+        self.figure_handles = None
+
+    def get_plot_gcf(self):
+        """
+        Returns the matplotlib figure handle of the canvas used for all
+        plots but that for a SeismogramEnsemble.   Useful only for
+        subclasses that need to manipulate the handle.
+        """
+        return self.figure
+
+    def get_3Censemble_gcf(self) -> tuple:
+        """
+        Returns the matplotlb figure handles for handlng
+        SeismogramEnsemble data.  This plotter draws 3c data in three
+        different figure handles with number tags 0, 1, and 2 for
+        each component.  Useful method mainly for subclasses of
+        this class.
+        """
+        return self.figure_handles
 
     def change_style(self, newstyle, fill_color="k", color_map="seismic"):
         """
@@ -681,21 +811,6 @@ class SeismicPlotter:
                 "SectionPlotter.change_style:  unknown style type=" + newstyle
             )
 
-    # These two method should perhaps be implemented as decorators
-
-    def topdown(self):
-        """
-        Switch to mode of plotting ensembles from the top downward
-        from default of bottum upward.
-        """
-        self._plot_topdown = True
-
-    def bottomup(self):
-        """
-        Restore (or force) default ensemble plot order of bottup upward.
-        """
-        self._plot_topdown = False
-
     def plot(self, d):
         # make copy always to prevent unintentional scaling of input data
         if self.normalize:
@@ -717,65 +832,6 @@ class SeismicPlotter:
                 "SeismicPlotter.plot:  internal style definition="
                 + self._style
                 + " is invalid\nThis should not happen"
-            )
-
-    def _deepcopy(self, d):
-        """
-        Private helper method for immediately above.   Necessary because
-        copy.deepcopy doesn't work with our pybind11 wrappers. There may be a
-        fix, but for now we have to use copy constructors specific to each
-        object type.
-        """
-        if isinstance(d, TimeSeries):
-            return TimeSeries(d)
-        elif isinstance(d, Seismogram):
-            return Seismogram(d)
-        elif isinstance(d, TimeSeriesEnsemble):
-            return TimeSeriesEnsemble(d)
-        elif isinstance(d, SeismogramEnsemble):
-            return SeismogramEnsemble(d)
-        else:
-            raise RuntimeError(
-                "SeismicPlotter._deepcopy:  received and unsupported data type=",
-                type(d),
-            )
-
-    def set_topdown(self):
-        """
-        Call this method to have datat plotted from top down.  Default plots
-        ensemble member 0 at the bottom of the plot with successive members
-        plotted in units of 1.0 above the last.  When this is called the
-        order is reversed.
-        """
-        self._plot_topdown = True
-
-    # These are private methods used internally
-
-    def _normalize(self, d):
-        """
-        Normalizes data (d) using scale function.  for ensembles that
-        is peak normalization to level self.scale by section. For
-        Seismograms each component will be normalized independently.
-        For TimeSeries the peak is adjusted to self.scale.
-
-        :param d:  input data to be scanned (must be one of mspass supported
-        data objects or will throw an exception)
-        :param perf:  clip level as used in seismic unix displays.
-        """
-        # These are place holders for now.  Requires some new code in ccore
-        # to sort absolute values and return perf level - should use faster
-        # max value when perf is 100%
-        if isinstance(d, SeismogramEnsemble):
-            alg_scale(d, scale_by_section=True, level=self.scale)
-        elif isinstance(d, TimeSeriesEnsemble):
-            alg_scale(d, scale_by_section=True, level=self.scale)
-        elif isinstance(d, TimeSeries):
-            alg_scale(d, level=self.scale)
-        elif isinstance(d, Seismogram):
-            alg_scale(d, level=self.scale)
-        else:
-            raise RuntimeError(
-                "SeismicPlotter._normalize:  Received unsupported data type=", type(d)
             )
 
     def _add_3C_titles(self):
@@ -1092,4 +1148,154 @@ class SeismicPlotter:
             vmin=vmin,
             vmax=vmax,
         )
-        return pyplot.gcf()
+        return plt.gcf()
+
+
+class LargeEnsemblePlotter(SeismicPlotter):
+    """
+    This is a special class to handle ensembles.   It forces a solution
+    that can be mysterous for a naive use of the more general SeismicPlotter.
+    That is, with a large ensemble the plot can easily come out a black
+    image when the number of ensemble members are of the order of 1/10
+    or more of the number of pixels defining the y axis.  The way thsi
+    subclass addresses that is by forcing the following:
+        1.  It normally produces multiple plots to display data in blocks.
+            sac users can think of this like theh "perplot" argument used
+            in the sac ppk function.
+        2.  It defaults to wiggle trace only plots to improve performance.
+        3.  It defaults to automatic scaling assuming that for many
+            inputs something always needs to be scaled
+        4.  It will only accept ensemble objects
+
+    Note since this is a subclass of SeismicPlotter, Seismogram enembles
+    will be plotted in three different figure windows.
+
+    Be warned large ensembles can produce a very large number of plots
+    with a single call to the plot method of this class.  With interactive
+    use you may need to click on a lot of windows to see all the data and
+    for notebooks you can quickly create a huge notebook.  All plotting
+    for large data sets must be done with caution.
+    """
+
+    def __init__(self, scale=0.5, normalize=True, title=None, members_per_frame=20):
+        """
+        Constructor for this object.   It mostly sets defaults but
+        has a few common optional parameters to set at construction
+        time.  Note style is intentionally not a constructor
+        parameter because of parameter interdependence.  The default
+        plot style is "wt" to maximize performance. You can use the
+        change_stye method inherited from SeismicPlotter to make
+        the plots a different style.
+
+        :param scale:  optional scale factor to apply to data before plotting
+          (default assumes data have been scaled to amplitude of order 1)
+        :type scale: float (default 1.0)
+        :param  normalize:  Default assumes the data have been scaled with
+          one of the mspass amplitude scaling functions to be of order one
+          (or the scale parameter).  Set True if the data are to be
+          normalized internally by the plotter.
+        :type normalize: boolean (defalt False)
+        :param title:   optional title to put on graphics.  Note for
+          SeismogramEnsembles each of the three windows will be tagged
+          with a variant of this title string adding ":n" where n is
+          the component number (0,1,2).
+        :type title: string (default None makes no plot title)
+        :param members_per_frame:  Number of
+        """
+        super().__init__(
+            scale=scale,
+            title=title,
+            normalize=normalize,
+        )
+        self.change_style("wt")
+        self.members_per_frame = members_per_frame
+
+    def plot(self, ens, skip_the_dead=True):
+        """
+        Plots esembles in groups of size defined by the instance.
+
+        This plot method overrides the plot method of SeismicPlotter
+        but actually uses the same functions to make the plots.
+        It does so  using a trick to run the "super" function.
+        When run interactively the function will block with
+        each frame until the window(s) is(are) closed.   In a notebook
+        the frames will all be rendered sequentially into the notebook.
+
+        As far as I can tell a limitation of the matplotlib is that
+        to allow an event loop for zoom and pan operatios on the plot
+        the window has to be closed in interactive mode.  It would be
+        nice to not have to have the window have to pop up for each frame
+        but I (glp) can't see how to do that - it may be impossible without
+        a major rewrite.
+
+        Note if the input ensemble is marked dead or has no live members
+        a informational message will be "printed" (print staement) and
+        nothing will be plotted.
+
+        :param ens:  Ensemble to be plotted
+        :type ens:  Must be either a TimeSeriesEnsemble of SeismogramEnsemle
+           or the method will throw a TypeError exception.
+        :param skip_the_dead:  Boolean controllng how dead data are
+           handed.  When True (default) dead data will be silently skippped.
+           When False all dead data will create an empty plot cell in
+           the position of the body.
+
+        """
+        alg = "LargeEnsemblePlotter.plot"
+        if not isinstance(ens, (TimeSeriesEnsemble, SeismogramEnsemble)):
+            message = "LargeEnsemblePlotter.plot:  "
+            message += "Illegal type for arg0={}\n".format(str(type(ens)))
+            message += "Can only plot seismic ensemble objects"
+            raise TypeError(message)
+
+        if ens.dead():
+            print(
+                alg
+                + "received ensemble marked dead - cannot  plot ensemble marked dead"
+            )
+            return
+        N = len(ens.member)
+        Nlive = number_live(ens)
+        if Nlive <= 0:
+            print(alg + " ensemble has no live members - nothing to plot")
+        if isinstance(ens, TimeSeriesEnsemble):
+            e2plot = TimeSeriesEnsemble()
+        else:
+            e2plot = SeismogramEnsemble()
+        count = 0
+        frame_number = 0
+        for i in range(len(ens.member)):
+            # shorthand
+            d = ens.member[i]
+            if skip_the_dead and d.dead():
+                # ddebug
+                print("skipping member ", i)
+                continue
+            if count < self.members_per_frame and i != (N - 1):
+                e2plot.member.append(d)
+                count += 1
+            else:
+                if frame_number > 0:
+                    self._clear_figure_canvases()
+                super().plot(e2plot)
+                # show blocks in interactive mode untill the framem iis
+                # closed.  I think in a notebook it make the plot and
+                # continue on producing multiple plot frames.
+                plt.show()
+                frame_number += 1
+                count = 0
+                e2plot.member.clear()
+
+    def _clear_figure_canvases(self):
+        """
+        Private method used to clear the canvas for any active graphhics.
+        Complicated by the fact tha SeismicPlotter use a single canvas
+        for TimeSeriesEnsemble plots and 3 canvases for SeismogramEnsembles.
+        """
+        gcf = self.get_plot_gcf()
+        if gcf:
+            gcf.clear()
+        handles = self.get_3Censemble_gcf()
+        if handles:
+            for gcf in handles:
+                gcf.clear()
