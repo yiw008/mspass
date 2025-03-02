@@ -95,6 +95,7 @@ class Client:
 
         # check env variables
         MSPASS_DB_ADDRESS = os.environ.get("MSPASS_DB_ADDRESS")
+        MSPASS_DB_COMPLETE_ADDRESS = os.environ.get("MSPASS_DB_COMPLETE_ADDRESS")
         MONGODB_PORT = os.environ.get("MONGODB_PORT")
         MSPASS_SCHEDULER = os.environ.get("MSPASS_SCHEDULER")
         MSPASS_SCHEDULER_ADDRESS = os.environ.get("MSPASS_SCHEDULER_ADDRESS")
@@ -117,6 +118,9 @@ class Client:
         # add port
         if not database_host_has_port and MONGODB_PORT:
             database_address += ":" + MONGODB_PORT
+        
+        if MSPASS_DB_COMPLETE_ADDRESS:
+            database_address = MSPASS_DB_COMPLETE_ADDRESS
 
         try:
             self._db_client = DBClient(database_address)
